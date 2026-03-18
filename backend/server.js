@@ -33,11 +33,35 @@ function saveData(data) {
 
 // ── LinkedIn helpers ───────────────────────────────────────────────────────────
 async function getLinkedInProfile(token) {
+  // Try OpenID Connect userinfo endpoint first
   const res = await fetch("https://api.linkedin.com/v2/userinfo", {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "LinkedIn-Version": "202210",
+    },
   });
-  if (!res.ok) throw new Error(`LinkedIn profile error: ${res.status}`);
-  return res.json();
+
+  if (res.ok) return res.json();
+
+  // Fallback: use /v2/me with projection
+  const res2 = await fetch("https://api.linkedin.com/v2/me?projection=(id,localizedFirstName,localizedLastName)", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "LinkedIn-Version": "202210",
+      "X-Restli-Protocol-Version": "2.0.0",
+    },
+  });
+
+  if (!res2.ok) {
+    const body = await res2.text();
+    throw new Error(`LinkedIn profile error: ${res2.status} - ${body}`);
+  }
+
+  const me = await res2.json();
+  return {
+    sub: me.id,
+    name: `${me.localizedFirstName} ${me.localizedLastName}`,
+  };
 }
 
 async function postToLinkedIn(token, personUrn, text) {
