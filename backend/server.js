@@ -97,7 +97,7 @@ async function postToLinkedIn(token, personUrn, text) {
 
 async function generatePost({ topic, tone, postType, keywords }) {
   const msg = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 800,
     messages: [
       {
@@ -105,17 +105,7 @@ async function generatePost({ topic, tone, postType, keywords }) {
         content: `Generate a LinkedIn post:
 - Topic: ${topic}
 - Tone: ${tone}
-- Type: ${postType}
 - Keywords: ${keywords || "none"}
-
-Rules:
-- Strong opening hook (don't start with "I")
-- Use line breaks for readability
-- 3-5 relevant hashtags at the end
-- 150-300 words
-- Feel authentic, not corporate
-- End with a question or CTA
-
 Return ONLY the post text, nothing else.`,
       },
     ],
