@@ -1,40 +1,49 @@
-# ⚡ LinkedIn AutoPoster
+# ⚡ LinkedIn AutoPoster v2
 
-Fully automated LinkedIn posting powered by Claude AI. Generate posts, post instantly, or schedule them — all without copy/paste.
-
----
-
-## 🚀 Quick Setup (15 minutes)
-
-### Step 1 — Get Your LinkedIn Access Token
-
-1. Go to [https://www.linkedin.com/developers/apps/new](https://www.linkedin.com/developers/apps/new)
-2. Create an app (you need a LinkedIn Company Page — create a dummy one if needed)
-3. Go to the **Settings** tab → verify your app
-4. Go to **Products** tab → add:
-   - ✅ Share on LinkedIn
-   - ✅ Sign In with LinkedIn using OpenID Connect
-5. Go to [https://www.linkedin.com/developers/tools/oauth/token-generator](https://www.linkedin.com/developers/tools/oauth/token-generator)
-6. Select your app → check ALL scopes → click **Request access token**
-7. Copy the token — it lasts **60 days**
+Multi-user LinkedIn posting app with full OAuth login. Users click "Continue with LinkedIn" — no token copy/pasting required.
 
 ---
 
-### Step 2 — Set Up the Backend
+## 🚀 Setup (one-time, ~15 minutes)
+
+### Step 1 — Add the Redirect URI to your LinkedIn App
+
+1. Go to [linkedin.com/developers/apps](https://www.linkedin.com/developers/apps)
+2. Click your app → **Auth** tab
+3. Under **Authorized Redirect URLs**, add:
+   ```
+   http://localhost:3001/auth/linkedin/callback
+   ```
+4. Save changes
+
+### Step 2 — Configure the backend
 
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env and add your Anthropic API key
+```
+
+Edit `.env` and fill in:
+```env
+ANTHROPIC_API_KEY=your_anthropic_api_key
+LINKEDIN_CLIENT_ID=your_app_client_id        # from LinkedIn App > Auth tab
+LINKEDIN_CLIENT_SECRET=your_app_client_secret
+LINKEDIN_REDIRECT_URI=http://localhost:3001/auth/linkedin/callback
+FRONTEND_URL=http://localhost:5173
+JWT_SECRET=pick_any_long_random_string_here
+```
+
+Your **Client ID** and **Client Secret** are on the **Auth** tab of your LinkedIn Developer App.
+
+### Step 3 — Start the backend
+
+```bash
+cd backend
 npm install
 npm start
 ```
 
-The backend runs on **http://localhost:3001**
-
----
-
-### Step 3 — Set Up the Frontend
+### Step 4 — Start the frontend
 
 ```bash
 cd frontend
@@ -42,63 +51,72 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173** in your browser.
+Open **http://localhost:5173** — you'll see the login screen.
+
+### Step 5 — Log in
+
+Click **Continue with LinkedIn** → authorize → you're in. Every user who visits your app can do the same.
 
 ---
 
-### Step 4 — Connect LinkedIn in the App
+## ✨ How OAuth works
 
-1. Paste your LinkedIn access token in the "Connect LinkedIn" box
-2. Click **Connect** — it will verify and save your credentials
-3. You're done! Start posting.
+```
+User clicks "Continue with LinkedIn"
+    → Backend redirects to LinkedIn login
+    → User approves your app
+    → LinkedIn sends a code to /auth/linkedin/callback
+    → Backend exchanges code for access token
+    → Backend creates/updates user in database
+    → Backend issues a JWT to the frontend
+    → User is logged in ✓
+```
 
----
-
-## ✨ Features
-
-| Feature | Description |
-|---|---|
-| 🤖 AI Generation | Claude writes posts based on topic, tone & type |
-| 🚀 Post Now | Instantly publish to your LinkedIn profile |
-| 📅 Scheduler | Queue posts for any future date/time |
-| 📋 History | See all published posts |
-| ✏️ Edit Preview | Tweak AI-generated posts before publishing |
-| 🔁 Auto-cron | Background job checks every minute for scheduled posts |
+No manual token generation. Tokens auto-refresh on each login. JWT sessions last 7 days.
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-frontend/   → React + Vite UI (port 5173)
-backend/    → Express server (port 3001)
-  server.js → API routes + LinkedIn integration + cron scheduler
-  data.json → Auto-created; stores token, scheduled posts, history
+frontend/           React + Vite (port 5173)
+backend/
+  server.js         Express API + OAuth handler + cron scheduler
+  db.js             SQLite schema + query helpers
+  app.db            Auto-created SQLite database
+  .env              Your secrets (never commit this)
 ```
 
----
-
-## ⚠️ Token Renewal
-
-LinkedIn tokens expire after **60 days**. Set a reminder to:
-1. Go back to the token generator
-2. Get a new token
-3. Paste it in the app → Connect
+### Database tables
+- `users` — LinkedIn ID, name, email, avatar, access token
+- `posts` — published post history per user
+- `scheduled_posts` — pending/posted/failed scheduled posts per user
 
 ---
 
-## 🔐 Security Notes
+## 🌐 Deploying for multiple users
 
-- Your token is stored in `backend/data.json` — keep this file private
-- Never commit `data.json` or `.env` to git (add to `.gitignore`)
-- Run this app locally or on a private server only
+1. Deploy backend to **Railway**, **Render**, or **Fly.io**
+2. Deploy frontend to **Vercel** or **Netlify**
+3. Update `.env` with production URLs
+4. Add your production callback URL to LinkedIn app's Authorized Redirect URLs:
+   ```
+   https://your-backend.railway.app/auth/linkedin/callback
+   ```
+5. Set `FRONTEND_URL` and `LINKEDIN_REDIRECT_URI` to production URLs
+
+That's it — anyone can now sign up via LinkedIn OAuth.
 
 ---
 
-## 📦 Tech Stack
+## ⚠️ LinkedIn token expiry
 
-- **Frontend**: React, Vite
-- **Backend**: Node.js, Express
-- **AI**: Anthropic Claude (claude-sonnet-4-20250514)
-- **Scheduler**: node-cron
-- **LinkedIn API**: ugcPosts v2 + userinfo OpenID
+LinkedIn access tokens expire after ~60 days. When a user's token expires, they just log in again via the "Continue with LinkedIn" button and it automatically refreshes their token.
+
+---
+
+## 🔐 Security notes
+
+- Never commit `.env` or `app.db` to git — add both to `.gitignore`
+- `JWT_SECRET` should be a long random string (32+ characters)
+- All API routes require a valid JWT — users can only see/edit their own posts
