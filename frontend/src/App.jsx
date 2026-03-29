@@ -3,7 +3,7 @@ import AuthSuccess from "./AuthSuccess.jsx";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const fmt = (iso) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const fmt = (iso) => new Date(iso.endsWith("Z") ? iso : iso + "Z").toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 function getToken() { return localStorage.getItem("app_token"); }
 function clearToken() { localStorage.removeItem("app_token"); }
@@ -139,8 +139,9 @@ function MainApp({ user, onLogout }) {
   const saveAutoPoster = async () => {
     if (!apPrompt.trim() || !apDays.length) return;
     setApSaving(true); setApResult(null);
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     try {
-      const r = await fetch(`${API}/api/autoposter`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ prompt: apPrompt, time_of_day: apTime, days_of_week: apDays }) });
+      const r = await fetch(`${API}/api/autoposter`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ prompt: apPrompt, time_of_day: apTime, timezone, days_of_week: apDays }) });
       const d = await r.json();
       if (r.ok) { setApResult({ ok: true, msg: "✅ Auto-poster created!" }); setApPrompt(""); fetchAutoPosters(); }
       else setApResult({ ok: false, msg: d.error });
@@ -268,7 +269,7 @@ function MainApp({ user, onLogout }) {
                 <div style={{ flex: 1 }}>
                   <p style={{ fontSize: "14px", marginBottom: "6px", color: "#e2e8f0" }}>{ap.prompt}</p>
                   <p style={{ fontSize: "12px", color: "#64748b" }}>
-                    🕐 {ap.time_of_day} &nbsp;·&nbsp; 📅 {ap.days_of_week.map(d => DAYS[d]).join(", ")}
+                    🕐 {ap.time_of_day} &nbsp;·&nbsp; 📅 {ap.days_of_week.map(d => DAYS[d]).join(", ")} &nbsp;·&nbsp; 🌍 {ap.timezone}
                   </p>
                   {ap.last_run_date && <p style={{ fontSize: "11px", color: "#334155", marginTop: "4px" }}>Last posted: {ap.last_run_date}</p>}
                 </div>

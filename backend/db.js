@@ -30,12 +30,18 @@ db.exec(`
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     prompt        TEXT    NOT NULL,
     time_of_day   TEXT    NOT NULL,
+    timezone      TEXT    NOT NULL DEFAULT 'UTC',
     days_of_week  TEXT    NOT NULL,
     last_run_date TEXT,
     active        INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT    DEFAULT (datetime('now'))
   );
 `);
+
+// Add timezone column if it doesn't exist yet (for existing databases)
+try {
+  db.exec("ALTER TABLE auto_posters ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'");
+} catch {}
 
 export function upsertUser({ linkedin_id, name, email, avatar, access_token }) {
   return db.prepare(`
@@ -60,40 +66,28 @@ export function getPostsByUser(user_id, limit = 30) {
   return db.prepare("SELECT * FROM posts WHERE user_id = ? ORDER BY posted_at DESC LIMIT ?").all(user_id, limit);
 }
 
-export function createAutoPoster({ user_id, prompt, time_of_day, days_of_week }) {
+export function createAutoPoster({ user_id, prompt, time_of_day, timezone, days_of_week }) {
   return db.prepare(`
-    INSERT INTO auto_posters (user_id, prompt, time_of_day, days_of_week)
-    VALUES (@user_id, @prompt, @time_of_day, @days_of_week) RETURNING *
-  `).get({ user_id, prompt, time_of_day, days_of_week });
+    INSERT INTO auto_posters (user_id, prompt, time_of_day, timezone, days_of_week)
+    VALUES (@user_id, @prompt, @time_of_day, @timezone, @days_of_week) RETURNING *
+  `).get({ user_id, prompt, time_of_day, timezone, days_of_week });
 }
 
 export function getAutoPostersByUser(user_id) {
   return db.prepare("SELECT * FROM auto_posters WHERE user_id = ? AND active = 1 ORDER BY created_at DESC").all(user_id);
 }
 
-export function getAutoPosterById(id) {
-  return db.prepare("SELECT * FROM auto_posters WHERE id = ?").get(id);
-}
-
-// Returns auto-posters that should fire right now
-export function getDueAutoPosts(currentTime, currentDay) {
-  const today = new Date().toISOString().slice(0, 10);
+export function getAllActiveAutoPosters() {
   return db.prepare(`
     SELECT a.*, u.access_token, u.linkedin_id
     FROM auto_posters a
     JOIN users u ON u.id = a.user_id
     WHERE a.active = 1
-      AND a.time_of_day = ?
-      AND (a.last_run_date IS NULL OR a.last_run_date != ?)
-  `).all(currentTime, today).filter(a => {
-    const days = JSON.parse(a.days_of_week);
-    return days.includes(currentDay);
-  });
+  `).all();
 }
 
-export function updateAutoPostLastRun(id) {
-  const today = new Date().toISOString().slice(0, 10);
-  db.prepare("UPDATE auto_posters SET last_run_date = ? WHERE id = ?").run(today, id);
+export function updateAutoPostLastRun(id, date) {
+  db.prepare("UPDATE auto_posters SET last_run_date = ? WHERE id = ?").run(date, id);
 }
 
 export function deleteAutoPoster(id, user_id) {

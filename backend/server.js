@@ -9,7 +9,7 @@ import {
   upsertUser, getUserById,
   createPost, getPostsByUser,
   createAutoPoster, getAutoPostersByUser,
-  getDueAutoPosts, updateAutoPostLastRun, deleteAutoPoster,
+  getAllActiveAutoPosters, updateAutoPostLastRun, deleteAutoPoster,
 } from "./db.js";
 
 dotenv.config();
@@ -30,6 +30,44 @@ function requireAuth(req, res, next) {
     next();
   } catch {
     res.status(401).json({ error: "Invalid or expired token" });
+  }
+}
+
+// Given an auto-poster, return true if it should fire right now
+function isDue(ap) {
+  try {
+    const now = new Date();
+
+    // Get current time in the user's timezone
+    const localTime = now.toLocaleTimeString("en-GB", {
+      timeZone: ap.timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }); // "HH:MM"
+
+    // Get current day in the user's timezone (0=Sun, 6=Sat)
+    const localDay = Number(new Intl.DateTimeFormat("en-US", {
+      timeZone: ap.timezone,
+      weekday: "short",
+    }).format(now).replace(/[^0-9]/g, "")) || ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].indexOf(
+      new Intl.DateTimeFormat("en-US", { timeZone: ap.timezone, weekday: "short" }).format(now)
+    );
+
+    // Get today's date string in the user's timezone
+    const localDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: ap.timezone,
+    }).format(now); // "YYYY-MM-DD"
+
+    const days = JSON.parse(ap.days_of_week);
+    const timeMatches = localTime === ap.time_of_day;
+    const dayMatches = days.includes(localDay);
+    const notRunToday = ap.last_run_date !== localDate;
+
+    return timeMatches && dayMatches && notRunToday;
+  } catch (e) {
+    console.error(`Timezone error for auto-poster ${ap.id} (${ap.timezone}):`, e.message);
+    return false;
   }
 }
 
@@ -73,14 +111,12 @@ async function generatePost(topic) {
   const msg = await anthropic.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 500,
-    messages: [{ role: "user", content: `Generate a LinkedIn post:\n- Topic: ${topic}.\n\nReturn ONLY the post text, nothing else.` }],
+    messages: [{ role: "user", content: `Generate a LinkedIn post:\n- Topic: ${topic}.\n\nDo not use any markdown formatting, asterisks, or bold text. Plain text only.\nReturn ONLY the post text, nothing else.` }],
   });
   return msg.content[0].text;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// OAUTH
-// ═══════════════════════════════════════════════════════════════════════════════
+// OAuth
 app.get("/auth/linkedin", (req, res) => {
   const params = new URLSearchParams({
     response_type: "code",
@@ -125,9 +161,7 @@ app.get("/auth/me", requireAuth, (req, res) => {
   res.json({ id: user.id, name: user.name, email: user.email, avatar: user.avatar });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// POST NOW
-// ═══════════════════════════════════════════════════════════════════════════════
+// Posts
 app.post("/api/generate", requireAuth, async (req, res) => {
   try {
     res.json({ text: await generatePost(req.body.topic) });
@@ -152,17 +186,19 @@ app.get("/api/history", requireAuth, (req, res) => {
   res.json(getPostsByUser(req.user.userId));
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// AUTO-POSTERS (daily/periodic)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Create an auto-poster: { prompt, time_of_day "HH:MM", days_of_week [0-6] }
+// Auto-posters
 app.post("/api/autoposter", requireAuth, async (req, res) => {
-  const { prompt, time_of_day, days_of_week } = req.body;
+  const { prompt, time_of_day, timezone, days_of_week } = req.body;
   if (!prompt || !time_of_day || !days_of_week?.length)
     return res.status(400).json({ error: "prompt, time_of_day, and days_of_week are required" });
   try {
-    const ap = createAutoPoster({ user_id: req.user.userId, prompt, time_of_day, days_of_week: JSON.stringify(days_of_week) });
+    const ap = createAutoPoster({
+      user_id: req.user.userId,
+      prompt,
+      time_of_day,
+      timezone: timezone || "UTC",
+      days_of_week: JSON.stringify(days_of_week),
+    });
     res.json({ success: true, autoposter: ap });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -178,22 +214,19 @@ app.delete("/api/autoposter/:id", requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CRON — check every minute for due auto-posters
-// ═══════════════════════════════════════════════════════════════════════════════
+// Cron — check every minute, use each user's timezone
 cron.schedule("* * * * *", async () => {
-  const now = new Date();
-  const currentTime = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-  const currentDay = now.getDay(); // 0=Sun, 6=Sat
-
-  const due = getDueAutoPosts(currentTime, currentDay);
-  for (const ap of due) {
+  const all = getAllActiveAutoPosters();
+  for (const ap of all) {
+    if (!isDue(ap)) continue;
     try {
+      // Store today's date in the user's timezone to prevent double-firing
+      const localDate = new Intl.DateTimeFormat("en-CA", { timeZone: ap.timezone }).format(new Date());
       const text = await generatePost(ap.prompt);
       await postToLinkedIn(ap.access_token, ap.linkedin_id, text);
       createPost(ap.user_id, text);
-      updateAutoPostLastRun(ap.id);
-      console.log(`✅ Auto-post ${ap.id} published for user ${ap.user_id}`);
+      updateAutoPostLastRun(ap.id, localDate);
+      console.log(`✅ Auto-post ${ap.id} published for user ${ap.user_id} (${ap.timezone})`);
     } catch (e) {
       console.error(`❌ Auto-post ${ap.id} failed:`, e.message);
     }
