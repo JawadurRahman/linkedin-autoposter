@@ -1,9 +1,6 @@
-import { setDefaultResultOrder, setServers } from "dns";
-setDefaultResultOrder("ipv4first");
-setServers(["1.1.1.1", "8.8.8.8"]);
-import https from "https";
 import express from "express";
 import cors from "cors";
+import fetch from "node-fetch";
 import jwt from "jsonwebtoken";
 import Anthropic from "@anthropic-ai/sdk";
 import dotenv from "dotenv";
@@ -11,7 +8,7 @@ import cron from "node-cron";
 import {
   upsertUser, getUserById,
   createPost, getPostsByUser,
-  createAutoPoster, getAutoPostersByUser, getAutoPosterById,
+  createAutoPoster, getAutoPostersByUser,
   getDueAutoPosts, updateAutoPostLastRun, deleteAutoPoster,
 } from "./db.js";
 
@@ -24,32 +21,7 @@ app.use(express.json());
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const { LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, LINKEDIN_REDIRECT_URI, FRONTEND_URL, JWT_SECRET } = process.env;
 
-// ── Native HTTPS (Windows-friendly, no node-fetch) ────────────────────────────
-function httpsRequest(url, options = {}, body = null) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const req = https.request({
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      method: options.method || "GET",
-      headers: options.headers || {},
-    }, (res) => {
-      let data = "";
-      res.on("data", chunk => data += chunk);
-      res.on("end", () => resolve({
-        ok: res.statusCode >= 200 && res.statusCode < 300,
-        status: res.statusCode,
-        json: () => JSON.parse(data),
-        text: () => data,
-      }));
-    });
-    req.on("error", reject);
-    if (body) req.write(body);
-    req.end();
-  });
-}
-
-// ── Auth middleware ────────────────────────────────────────────────────────────
+// Auth middleware
 function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) return res.status(401).json({ error: "Unauthorized" });
@@ -61,40 +33,39 @@ function requireAuth(req, res, next) {
   }
 }
 
-// ── LinkedIn helpers ───────────────────────────────────────────────────────────
+// LinkedIn helpers
 async function getLinkedInProfile(accessToken) {
-  const res = await httpsRequest("https://api.linkedin.com/v2/userinfo", {
+  const res = await fetch("https://api.linkedin.com/v2/userinfo", {
     headers: { Authorization: `Bearer ${accessToken}`, "LinkedIn-Version": "202210" },
   });
   if (res.ok) return res.json();
 
-  const res2 = await httpsRequest(
+  const res2 = await fetch(
     "https://api.linkedin.com/v2/me?projection=(id,localizedFirstName,localizedLastName)",
     { headers: { Authorization: `Bearer ${accessToken}`, "LinkedIn-Version": "202210", "X-Restli-Protocol-Version": "2.0.0" } }
   );
   if (!res2.ok) throw new Error(`LinkedIn profile error: ${res2.status}`);
-  const me = res2.json();
+  const me = await res2.json();
   return { sub: me.id, name: `${me.localizedFirstName} ${me.localizedLastName}` };
 }
 
 async function postToLinkedIn(accessToken, personUrn, text) {
-  const bodyStr = JSON.stringify({
-    author: `urn:li:person:${personUrn}`,
-    lifecycleState: "PUBLISHED",
-    specificContent: { "com.linkedin.ugc.ShareContent": { shareCommentary: { text }, shareMediaCategory: "NONE" } },
-    visibility: { "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC" },
-  });
-  const res = await httpsRequest("https://api.linkedin.com/v2/ugcPosts", {
+  const res = await fetch("https://api.linkedin.com/v2/ugcPosts", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(bodyStr),
       "LinkedIn-Version": "202210",
       "X-Restli-Protocol-Version": "2.0.0",
     },
-  }, bodyStr);
-  if (!res.ok) throw new Error(`LinkedIn post error ${res.status}: ${res.text()}`);
+    body: JSON.stringify({
+      author: `urn:li:person:${personUrn}`,
+      lifecycleState: "PUBLISHED",
+      specificContent: { "com.linkedin.ugc.ShareContent": { shareCommentary: { text }, shareMediaCategory: "NONE" } },
+      visibility: { "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC" },
+    }),
+  });
+  if (!res.ok) throw new Error(`LinkedIn post error ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
@@ -125,21 +96,19 @@ app.get("/auth/linkedin/callback", async (req, res) => {
   const { code, error } = req.query;
   if (error || !code) return res.redirect(`${FRONTEND_URL}?error=linkedin_denied`);
   try {
-    const bodyStr = new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: LINKEDIN_REDIRECT_URI,
-      client_id: LINKEDIN_CLIENT_ID,
-      client_secret: LINKEDIN_CLIENT_SECRET,
-    }).toString();
-
-    const tokenRes = await httpsRequest("https://www.linkedin.com/oauth/v2/accessToken", {
+    const tokenRes = await fetch("https://www.linkedin.com/oauth/v2/accessToken", {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(bodyStr) },
-    }, bodyStr);
-
-    if (!tokenRes.ok) throw new Error(`Token exchange failed: ${tokenRes.status} ${tokenRes.text()}`);
-    const { access_token } = tokenRes.json();
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: LINKEDIN_REDIRECT_URI,
+        client_id: LINKEDIN_CLIENT_ID,
+        client_secret: LINKEDIN_CLIENT_SECRET,
+      }),
+    });
+    if (!tokenRes.ok) throw new Error(`Token exchange failed: ${tokenRes.status} ${await tokenRes.text()}`);
+    const { access_token } = await tokenRes.json();
     const profile = await getLinkedInProfile(access_token);
     const user = upsertUser({ linkedin_id: profile.sub, name: profile.name, email: profile.email || null, avatar: profile.picture || null, access_token });
     const appToken = jwt.sign({ userId: user.id, name: user.name, avatar: user.avatar }, JWT_SECRET, { expiresIn: "7d" });
